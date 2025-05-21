@@ -1,0 +1,40 @@
+[project]
+authors = ["ayenifola <ayenifolake@gmail.com>"]
+channels = ["conda-forge"]
+description = "Add a short description here"
+name = "folake-fyp"
+platforms = ["win-64", "osx-64", "osx-arm64",]
+version = "0.1.0"
+
+[tasks]
+format = {cmd = "black ./ --line-length=99", cwd = "./"}
+[target.win-64.tasks]
+which_conda = {cmd = "echo $CONDA_PREFIX\\libexec\\conda.bat"}
+
+[dependencies]
+python = "3.11.*"
+pixi-pycharm = ">=0.0.8,<0.0.9"
+jupyterlab = ">=4.4.2,<5"
+kagglehub = ">=0.3.8,<0.4"
+pip = ">=25.1.1,<26"
+polars = ">=1.29.0,<2"
+scikit-learn = ">=1.6.1,<2"
+ipywidgets = ">=8.1.7,<9"
+matplotlib = ">=3.10.3,<4"
+seaborn = ">=0.13.2,<0.14"
+pyarrow = ">=20.0.0,<21"
+
+[pypi-dependencies]
+black = { version = ">=25.1.0, <26", extras = ["jupyter"] }
+
+[target.win-64.pypi-dependencies]
+torch = { version = ">=2.5.1", index = "https://download.pytorch.org/whl/cu124" }
+torchvision = { version = ">=0.20.1", index = "https://download.pytorch.org/whl/cu124" }
+
+[target.osx.pypi-dependencies]
+torch = { version = "*", index = "https://download.pytorch.org/whl/cpu" }
+torchvision = { version = "*", index = "https://download.pytorch.org/whl/cpu" }
+
+[target.osx-arm64.pypi-dependencies]
+torch = { version = ">=2.5.1", index = "https://download.pytorch.org/whl/cpu" }
+torchvision = { version = ">=0.20.1", index = "https://download.pytorch.org/whl/cpu" }
