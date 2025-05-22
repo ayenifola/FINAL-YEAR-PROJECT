@@ -24,7 +24,7 @@ def train(
     model_type: str = "mlp",
     feature_indices: list[int] | None = None,
     lr: float = 1e-3,
-    num_epochs: int = 1,
+    num_epochs: int = 10,
     batch_size: int = 128,
     num_workers: int = 8,
     random_state: int | None = 42,
