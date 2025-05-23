@@ -28,11 +28,13 @@ rootutils = ">=1.0.7,<2"
 typer = ">=0.15.4,<0.16"
 loguru = ">=0.7.3,<0.8"
 deap = ">=1.4.3,<2"
+numpy = "<2"
 
 [pypi-dependencies]
 black = { version = ">=25.1.0, <26", extras = ["jupyter"] }
 torchmetrics = ">=1.7.1, <2"
 torchinfo = ">=1.8.0, <2"
+numpy = "<2"
 
 [target.win-64.pypi-dependencies]
 torch = { version = ">=2.5.1", index = "https://download.pytorch.org/whl/cu124" }
