@@ -9,7 +9,6 @@ from loguru import logger
 from torch.utils.data import DataLoader, Dataset
 from torchmetrics import Precision, Recall, F1Score, MetricCollection
 
-from src.data import AnomalyDetectionDataset
 from src.trainer import train_model
 
 __all__ = ["f1_score_based_fitness_evaluator", "initialize_toolbox", "run_genetic_algorithm"]
@@ -18,19 +17,15 @@ __all__ = ["f1_score_based_fitness_evaluator", "initialize_toolbox", "run_geneti
 def f1_score_based_fitness_evaluator(
     individual_chromosome: list[int],
     model_factory: Callable[..., nn.Module],
-    train_dataset: AnomalyDetectionDataset,
-    val_dataset: AnomalyDetectionDataset,
+    dataset_factory: Callable[..., Dataset],
     device: torch.device,
     optimizer_factory: Callable[..., torch.optim.Optimizer],
     criterion: nn.Module = nn.BCEWithLogitsLoss(),
-    num_train_samples: int = 500,
-    num_val_samples: int = 200,
     num_epochs: int = 5,
     num_workers: int = 0,
     batch_size: int = 32,
-    feature_penalty_factor: float = 0.0,
     classification_threshold: float = 0.5,
-) -> tuple[float]:
+) -> tuple[float, float]:
     """Evaluates the fitness of an individual (feature subset) by training
     and evaluating a neural network.
 
@@ -43,17 +38,13 @@ def f1_score_based_fitness_evaluator(
         individual_chromosome: A binary list representing the feature subset
                                       (1 for selected, 0 for not selected).
         model_factory: Function that takes input_feature_dim to create class of the PyTorch neural network model to be trained.
-        train_dataset: The full PyTorch Dataset for training, containing all features.
-        val_dataset: The full PyTorch Dataset for validation, containing all features.
+        dataset_factory: Function that takes dataset-split and selected feature indices to create a Dataset.
         device: The device (e.g., 'cuda' or 'cpu') to train and evaluate the model on.
         num_epochs: Number of epochs to train the temporary NN for fitness evaluation.
                                        Defaults to 5.
         batch_size: Batch size for training the temporary NN. Defaults to 32.
         optimizer_factory: The optimizer factory.
         criterion: The loss function. Defaults to nn.BCEWithLogitsLoss().
-        feature_penalty_factor: A factor to penalize the fitness score based on the
-                                                  number of selected features. Higher values penalize more.
-                                                  Defaults to 0.0 (no penalty).
 
     Returns:
         tuple: A tuple containing a single float value representing the fitness
@@ -62,27 +53,21 @@ def f1_score_based_fitness_evaluator(
     selected_feature_indices = [i for i, bit in enumerate(individual_chromosome) if bit == 1]
 
     if not selected_feature_indices:
-        return (0.0,)
+        return 0.0, float("inf")  # Worst possible feature count
 
-    train_indices = random.sample(range(len(train_dataset)), num_train_samples)
+    train_dataset = dataset_factory("train", selected_feature_indices)
     current_train_loader = DataLoader(
-        _SubsetFeatureDataset(train_dataset, selected_feature_indices, train_indices),
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers,
+        train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers
     )
 
-    val_indices = random.sample(range(len(val_dataset)), num_val_samples)
+    val_dataset = dataset_factory("val", selected_feature_indices)
     current_val_loader = DataLoader(
-        _SubsetFeatureDataset(val_dataset, selected_feature_indices, val_indices),
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
+        val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers
     )
 
-    input_dim_subset = len(selected_feature_indices)
+    input_dim_subset = val_dataset[0][0].shape[0]
     if input_dim_subset == 0:  # Should be caught by the initial check
-        return (0.0,)
+        return (0.0, float("inf"))
 
     _, val_metrics_dict, _ = train_model(
         model=model_factory(input_dim_subset),
@@ -105,37 +90,10 @@ def f1_score_based_fitness_evaluator(
         log_progress=False,
     )
 
-    selected_ratio = sum(individual_chromosome) / len(individual_chromosome)
-    fitness_value = float(val_metrics_dict["val_f1"]) - (feature_penalty_factor * selected_ratio)
+    selected_ratio = sum(individual_chromosome)  # / len(individual_chromosome)
+    fitness_value = float(val_metrics_dict["val_f1"])
 
-    return (fitness_value,)
-
-
-class _SubsetFeatureDataset(Dataset):
-    def __init__(
-        self,
-        dataset: AnomalyDetectionDataset,
-        feature_indices: list[int],
-        sample_indices: list[int],
-    ):
-        self._dataset = dataset
-        self._sample_indices = sample_indices
-        self._feature_indices = feature_indices
-        # Validate that feature_indices are within bounds of original_dataset features
-        if dataset and len(dataset) > 0:
-            # Get one sample to check feature dimension
-            sample_features, _ = dataset[0]
-            if max(feature_indices) >= sample_features.shape[0]:
-                raise ValueError("Feature index out of bounds for the original dataset.")
-
-    def __len__(self):
-        return len(self._sample_indices)
-
-    def __getitem__(self, idx):
-        idx = self._sample_indices[idx]
-        features, label = self._dataset[idx]
-        subset_features = features[self._feature_indices]
-        return subset_features, label
+    return fitness_value, selected_ratio
 
 
 def initialize_toolbox(
@@ -150,8 +108,12 @@ def initialize_toolbox(
     if hasattr(creator, "Individual"):
         del creator.Individual
 
-    creator.create("FitnessMax", base.Fitness, weights=(1.0,))
-    creator.create("Individual", list, fitness=creator.FitnessMax)
+    # creator.create("FitnessMax", base.Fitness, weights=(1.0,))
+    # creator.create("Individual", list, fitness=creator.FitnessMax)
+
+    # Multi-objective: maximize F1, minimize number of features
+    creator.create("FitnessMulti", base.Fitness, weights=(1.0, -1.0))
+    creator.create("Individual", list, fitness=creator.FitnessMulti)
 
     toolbox = base.Toolbox()
     toolbox.register("attr_bool", random.randint, 0, 1)
@@ -199,7 +161,8 @@ def run_genetic_algorithm(
             - selected_feature_indices (list): A list of indices of the selected features.
     """
     pop = toolbox.population(n=population_size)
-    hof = tools.HallOfFame(1)
+    # hof = tools.HallOfFame(1)
+    hof = tools.ParetoFront()
     stats = tools.Statistics(lambda ind: ind.fitness.values)
     stats.register("avg", np.mean)
     stats.register("std", np.std)
@@ -211,9 +174,21 @@ def run_genetic_algorithm(
         num_generations=num_generations,
         population_size=population_size,
     )
-    pop, logbook = algorithms.eaSimple(
+    # pop, logbook = algorithms.eaSimple(
+    #     pop,
+    #     toolbox,
+    #     cxpb=crossover_prob,
+    #     mutpb=mutation_prob,
+    #     ngen=num_generations,
+    #     stats=stats,
+    #     halloffame=hof,
+    #     verbose=verbose,
+    # )
+    pop, logbook = algorithms.eaMuPlusLambda(
         pop,
         toolbox,
+        mu=population_size,
+        lambda_=population_size,
         cxpb=crossover_prob,
         mutpb=mutation_prob,
         ngen=num_generations,
@@ -221,8 +196,11 @@ def run_genetic_algorithm(
         halloffame=hof,
         verbose=verbose,
     )
+    for ind in hof:
+        f1, num_features = ind.fitness.values
+        logger.info(f"F1: {f1:.4f}, Features used: {int(num_features)}")
 
-    best_individual_chromosome = hof[0]
+    best_individual_chromosome = sorted(hof, key=lambda ind: -ind.fitness.values[0])[0]
     best_fitness = best_individual_chromosome.fitness.values[0]
     selected_feature_indices = [i for i, bit in enumerate(best_individual_chromosome) if bit == 1]
 

@@ -1,12 +1,13 @@
+import random
 from pathlib import Path
 from typing import Callable
 
+import numpy as np
 import torch
 from torch import nn as nn
 from torch.utils.data import DataLoader
 from torchmetrics import MetricCollection, MeanMetric
 from tqdm import tqdm
-import numpy as np
 
 __all__ = ["train_model", "evaluate_model", "set_random_state"]
 
@@ -199,3 +200,4 @@ def set_random_state(random_state):
         torch.manual_seed(random_state)
         torch.cuda.manual_seed(random_state)
         np.random.seed(random_state)
+        random.seed(random_state)

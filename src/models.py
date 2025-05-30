@@ -1,5 +1,6 @@
 from collections import OrderedDict
 from typing import Literal
+
 import torch
 import torch.nn as nn
 
@@ -7,7 +8,7 @@ __all__ = ["model_factory", "SimpleNN", "ModernMLP", "AdvancedResMLP"]
 
 
 def model_factory(
-    model_type: Literal["mlp", "resnet-mlp", "simple-nn"], input_dim: int
+    model_type: Literal["mlp", "resnet-mlp", "simple-nn", "lstm"], input_dim: int
 ) -> nn.Module:
     if model_type == "mlp":
         return ModernMLP(input_dim=input_dim, hidden_dims=[128, 64], dropout_p=0.2)
@@ -15,8 +16,16 @@ def model_factory(
         return AdvancedResMLP(input_features=input_dim, num_resnet_blocks=3, resnet_block_dim=128)
     if model_type == "simple-nn":
         return SimpleNN(input_features=input_dim, hidden_units1=128, hidden_units2=64)
-    else:
-        raise ValueError(f"Unknown model type: {model_type}")
+    if model_type == "lstm":
+        return LSTM(
+            embedding_dim=32,
+            lstm_hidden_dim=64,
+            output_dim=1,
+            lstm_layers=1,
+            dropout_rate=0.3,
+        )
+
+    raise ValueError(f"Unknown model type: {model_type}")
 
 
 class SimpleNN(nn.Module):
@@ -125,3 +134,66 @@ class AdvancedResMLP(nn.Module):
         x = self.resnet_blocks(x)
         x = self.final_layer(x)
         return x
+
+
+class LSTM(nn.Module):
+    def __init__(
+        self,
+        embedding_dim: int,
+        lstm_hidden_dim: int,
+        output_dim: int = 1,
+        lstm_layers: int = 1,
+        dropout_rate: float = 0.2,
+    ):
+        super().__init__()
+        self.embedding_dim = embedding_dim
+        self.lstm_hidden_dim = lstm_hidden_dim
+
+        self.lstm = nn.LSTM(
+            1,
+            lstm_hidden_dim,
+            num_layers=lstm_layers,
+            batch_first=True,
+            dropout=dropout_rate if lstm_layers > 1 else 0,
+        )
+
+        self.combined_feature_size = lstm_hidden_dim
+
+        self.fc1 = nn.Linear(self.combined_feature_size, self.combined_feature_size // 2)
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(dropout_rate)
+        self.fc2 = nn.Linear(self.combined_feature_size // 2, output_dim)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, input_):
+        lstm_out, (hidden, cell) = self.lstm(input_[..., None])
+
+        x = self.fc1(hidden[-1])
+        x = self.relu(x)
+        x = self.dropout(x)
+        x = self.fc2(x)
+        output = self.sigmoid(x)
+
+        return output
+
+
+class CNN1DModel(nn.Module):
+    def __init__(self, input_dim: int, seq_length: int):
+        super().__init__()
+        self.conv1 = nn.Conv1d(in_channels=input_dim, out_channels=32, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv1d(in_channels=32, out_channels=64, kernel_size=3, padding=1)
+        self.pool = nn.MaxPool1d(kernel_size=2, stride=2)
+        self.flatten = nn.Flatten()
+        self.fc1 = nn.Linear(64 * (seq_length // 2), 128)
+        self.dropout = nn.Dropout(0.5)
+        self.fc2 = nn.Linear(128, 1)
+
+    def forward(self, x):
+        x = x.permute(0, 2, 1)  # (batch_size, num_features, seq_length)
+        x = torch.relu(self.conv1(x))
+        x = self.pool(torch.relu(self.conv2(x)))
+        x = self.flatten(x)
+        x = torch.relu(self.fc1(x))
+        x = self.dropout(x)
+        x = self.fc2(x)
+        return x.squeeze(-1)
