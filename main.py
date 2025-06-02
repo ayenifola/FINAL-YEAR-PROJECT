@@ -1,42 +1,56 @@
-from functools import partial
-from pathlib import Path
-
+import cyclopts
+import polars as pl
+import random
 import rootutils
 import torch
 import torch.nn as nn
-import typer
+from functools import partial
 from loguru import logger
+from pathlib import Path
+from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
-from torchmetrics import Accuracy, Precision, Recall, F1Score, MetricCollection, AUROC
 from torchinfo import summary
-from src.data import dataset_factory, load_data, AnomalyDetectionDataset
+from torchmetrics import Accuracy, Precision, Recall, F1Score, MetricCollection, AUROC
+from typing import Literal
+
+from src.data import dataset_factory, load_data, NetworkTrafficDataset
+from src.feature_selection import *
 from src.models import model_factory
 from src.trainer import train_model, evaluate_model, set_random_state
-from src.feature_selection import *
-import polars as pl
-import random
-from sklearn.model_selection import train_test_split
 
 root_dir = rootutils.find_root(__file__, [".project-root"])
-app = typer.Typer()
+app = cyclopts.App()
+
+_SEQUENCE_LENGTHS = {
+    "mqttset": 10,
+    "iiotset": 10,
+    "x-iiotd": 1,
+}
 
 
 @app.command()
 def train(
-    dataset_type: str = "mqttset",
+    dataset_type: Literal["mqttset", "iiotset", "x-iiotd"] = "mqttset",
     data_dir: Path = root_dir / "data",
-    model_type: str = "mlp",
+    model_type: Literal["cnn1d", "lstm", "gru"] = "cnn1d",
     features: list[str] | None = None,
     lr: float = 1e-3,
-    num_epochs: int = 10,
+    num_epochs: int = 5,
     batch_size: int = 128,
     num_workers: int = 8,
     random_state: int | None = 42,
     train_metric_log_interval: int = 1000,
+    sequence_length: Literal["auto"] | int = "auto",
     threshold: float = 0.5,
     debug: bool = False,
 ):
     set_random_state(random_state)
+
+    s_length = (
+        _SEQUENCE_LENGTHS[dataset_type]
+        if isinstance(sequence_length, str) and sequence_length == "auto"
+        else sequence_length
+    )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -44,6 +58,7 @@ def train(
         dataset=dataset_type,
         data_dir=data_dir,
         features=features,
+        sequence_length=s_length,
         random_state=random_state,
     )
     train_dataset, val_dataset, test_dataset = datasets["train"], datasets["val"], datasets["test"]
@@ -70,8 +85,8 @@ def train(
     )
 
     # prepare model
-    input_dim = train_dataset[0][0].shape[0]
-    model = model_factory(model_type, input_dim)
+    input_dim = train_dataset[0][0].shape[-1]
+    model = model_factory(model_type, input_dim=input_dim, sequence_length=s_length)
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
     metrics = MetricCollection(
@@ -86,7 +101,7 @@ def train(
 
     summary(
         model,
-        input_size=(batch_size, input_dim),
+        input_size=(batch_size, s_length, input_dim),
         device=device,
         col_names=["input_size", "output_size", "num_params"],
     )
@@ -112,7 +127,7 @@ def train(
         checkpoint_metric_mode="max",
         checkpoint_path=root_dir
         / "checkpoints"
-        / f"{model_type}-epoch={{epoch:02d}}-val_f1={{val_f1:.4f}}.pt",
+        / f"{model_type}-{dataset_type}-epoch={{epoch:02d}}-val_f1={{val_f1:.4f}}.pt",
     )
 
     logger.info("Train Results: {0}", {k: f"{v:.6f}" for k, v in train_metrics_dict.items()})
@@ -129,9 +144,10 @@ def train(
 def evaluate(
     model_checkpoint: str,
     data_dir: Path = root_dir / "data",
-    dataset_type: str = "mqttset",
+    dataset_type: Literal["mqttset", "iiotset", "x-iiotd"] = "mqttset",
     features: list[str] | None = None,
-    model_type: str = "mlp",
+    model_type: Literal["cnn1d", "lstm", "gru"] = "cnn1d",
+    sequence_length: Literal["auto"] | int = "auto",
     batch_size: int = 128,
     num_workers: int = 8,
     random_state: int | None = 42,
@@ -139,12 +155,19 @@ def evaluate(
 ):
     set_random_state(random_state)
 
+    s_length = (
+        _SEQUENCE_LENGTHS[dataset_type]
+        if isinstance(sequence_length, str) and sequence_length == "auto"
+        else sequence_length
+    )
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     datasets, extras = dataset_factory(
         dataset=dataset_type,
         features=features,
         random_state=random_state,
+        sequence_length=s_length,
         data_dir=data_dir,
     )
     test_dataset = datasets["test"]
@@ -155,12 +178,12 @@ def evaluate(
         shuffle=False,
         num_workers=num_workers,
     )
-    input_dim = test_dataset[0][0].shape[0]
-    model = model_factory(model_type, input_dim)
+    input_dim = test_dataset[0][0].shape[-1]
+    model = model_factory(model_type, input_dim=input_dim, sequence_length=s_length)
 
     summary(
         model,
-        input_size=(batch_size, input_dim),
+        input_size=(batch_size, s_length, input_dim),
         device=device,
         col_names=["input_size", "output_size", "num_params"],
     )
@@ -192,8 +215,10 @@ def evaluate(
 
 @app.command()
 def feature_selection(
-    dataset_type: str = "mqttset",
-    model_type: str = "mlp",
+    method: Literal["ga", "gp"] = "gp",
+    dataset_type: Literal["mqttset", "iiotset", "x-iiotd"] = "mqttset",
+    model_type: Literal["cnn1d", "lstm", "gru"] = "cnn1d",
+    sequence_length: Literal["auto"] | int = "auto",
     data_dir: Path = root_dir / "data",
     lr: float = 5e-3,
     num_epochs: int = 5,
@@ -213,20 +238,26 @@ def feature_selection(
     assert dataset_split_method in ["stratified", "balanced", "random"]
     set_random_state(random_state)
 
+    s_length = (
+        _SEQUENCE_LENGTHS[dataset_type]
+        if isinstance(sequence_length, str) and sequence_length == "auto"
+        else sequence_length
+    )
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     def _model_factory(input_dim):
-        return model_factory(model_type, input_dim)
+        return model_factory(model_type, input_dim=input_dim, sequence_length=s_length)
 
-    def _sample(df: pl.DataFrame, max_size, method=dataset_split_method):
-        if method == "stratified":
+    def _sample(df: pl.DataFrame, max_size, split_method=dataset_split_method):
+        if split_method == "stratified":
             _, indices = train_test_split(
                 list(range(len(df))),
                 test_size=max_size,
                 stratify=df["attack_label"].to_numpy(),
             )
             return df[indices]
-        elif method == "balanced":
+        elif split_method == "balanced":
             half_size = max_size // 2
 
             class_0 = df.filter(pl.col("attack_label") == 0)
@@ -243,7 +274,9 @@ def feature_selection(
             indices = random.sample(range(len(df)), max_size)
             return df[indices]
 
-    data, extras = load_data(dataset_type, data_dir=data_dir, random_state=random_state)
+    data, extras = load_data(
+        dataset_type, data_dir=data_dir, sequence_length=s_length, random_state=random_state
+    )
     train_data = data.filter(pl.col("split") == "train")
     val_data = data.filter(pl.col("split") == "val")
 
@@ -252,14 +285,16 @@ def feature_selection(
     pos_weight = extras["pos_weight"]
 
     def _dataset_factory(split: str, features: list[int]):
-        return AnomalyDetectionDataset(
-            train_data if split == "train" else val_data, split, features
+        return NetworkTrafficDataset(
+            train_data if split == "train" else val_data, s_length, split, features
         )
 
-    train_dataset = _dataset_factory("train", features=[])
+    dataset_train = _dataset_factory("train", features=[])
 
+    num_features = dataset_train.num_features
     fitness_function = partial(
         f1_score_based_fitness_evaluator,
+        num_features=num_features,
         model_factory=_model_factory,
         dataset_factory=_dataset_factory,
         device=device,
@@ -271,23 +306,35 @@ def feature_selection(
         classification_threshold=classification_threshold,
     )
 
-    toolbox = initialize_toolbox(
-        num_total_features=train_dataset.num_features, fitness_function=fitness_function
-    )
+    if method == "ga":
+        toolbox = init_toolbox_ga(num_features=num_features, fitness_function=fitness_function)
+        selected_indices, metrics = run_genetic_algorithm(
+            toolbox=toolbox,
+            population_size=population_size,
+            num_generations=num_generations,
+            crossover_prob=crossover_prob,
+            mutation_prob=mutation_prob,
+            verbose=verbose,
+        )
+    else:
+        toolbox = initialize_toolbox_gp(
+            num_features=num_features, fitness_function=fitness_function
+        )
+        selected_indices, metrics = run_genetic_programming(
+            num_features=num_features,
+            toolbox=toolbox,
+            population_size=population_size,
+            num_generations=num_generations,
+            crossover_prob=crossover_prob,
+            mutation_prob=mutation_prob,
+            verbose=verbose,
+        )
 
-    selected_indices, metrics = run_genetic_algorithm(
-        toolbox=toolbox,
-        population_size=population_size,
-        num_generations=num_generations,
-        crossover_prob=crossover_prob,
-        mutation_prob=mutation_prob,
-        verbose=verbose,
-    )
     logger.info(f"Selected feature indices: {selected_indices}")
     logger.info(f"Genetic algorithm metrics: {metrics}")
     if selected_indices:
         logger.info(
-            f"Selected feature names: {[train_dataset.feature_names[i] for i in selected_indices]}"
+            f"Selected feature names: {[dataset_train.feature_names[i] for i in selected_indices]}"
         )
 
 

@@ -3,13 +3,13 @@ authors = ["ayenifola <ayenifolake@gmail.com>"]
 channels = ["conda-forge"]
 description = "Add a short description here"
 name = "folake-fyp"
-platforms = ["win-64", "osx-64", "osx-arm64",]
+platforms = ["win-64", "osx-64", "osx-arm64", ]
 version = "0.1.0"
 
 [tasks]
-format = {cmd = "black ./ --line-length=99", cwd = "./"}
+format = { cmd = "black ./ --line-length=99", cwd = "./" }
 [target.win-64.tasks]
-which_conda = {cmd = "echo $CONDA_PREFIX\\libexec\\conda.bat"}
+which_conda = { cmd = "echo $CONDA_PREFIX\\libexec\\conda.bat" }
 
 [dependencies]
 python = "3.11.*"
@@ -25,10 +25,10 @@ seaborn = ">=0.13.2,<0.14"
 pyarrow = ">=20.0.0,<21"
 tqdm = ">=4.67.1,<5"
 rootutils = ">=1.0.7,<2"
-typer = ">=0.15.4,<0.16"
 loguru = ">=0.7.3,<0.8"
 deap = ">=1.4.3,<2"
 numpy = "<2"
+cyclopts = ">=3.16.2,<4"
 
 [pypi-dependencies]
 black = { version = ">=25.1.0, <26", extras = ["jupyter"] }
