@@ -88,6 +88,7 @@ def train_model(
                         {
                             k: f"{v:.4f}" if k.endswith("_loss") else f"{v:.2f}"
                             for k, v in train_metrics_dict.items()
+                            if "matrix" not in k
                         }
                     )
                 log_dict.update({"lr": f"{optimizer.param_groups[0]['lr']:.1e}"})
@@ -119,6 +120,7 @@ def train_model(
                 {
                     k: f"{v:.4f}" if k.endswith("_loss") else f"{v:.2f}"
                     for k, v in val_metrics_dict.items()
+                    if "matrix" not in k
                 }
             )
             log_dict.update({"lr": f"{optimizer.param_groups[0]['lr']:.1e}"})

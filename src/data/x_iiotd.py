@@ -103,7 +103,7 @@ def load_x_iiotd() -> pl.DataFrame:
 
     # (iii) session identification ... each row of this dataset is already a summary of a flow
     # so it's very likely to have a lot of sessions with only one entry
-    df = _assign_flow_session_id(df)
+    df = df.with_columns(pl.lit("0").alias("session_id"))
 
     # (iv) feature engineering
     df = df.with_columns(

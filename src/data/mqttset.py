@@ -17,7 +17,7 @@ def load_mqttset() -> pl.DataFrame:
             path, infer_schema_length=10_000, schema_overrides={"mqtt.msg": pl.Utf8}
         ).with_columns(
             pl.lit(path.stem).alias("attack_type"),
-            pl.lit(path.stem.startswith("legitimate")).alias("attack_label"),
+            pl.lit(not path.stem.startswith("legitimate")).alias("attack_label"),
         )
         for path in data_path.iterdir()
     ]
